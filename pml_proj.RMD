@@ -1,0 +1,186 @@
+---
+date: "November 17, 2015"
+output: html_document
+---
+#Model Development for the Prediction of Biceps Curl Activities
+
+##Introduction
+
+The goal of this project was to develop and evaluate predictive models that could correctly identify five specific approaches to performing a biceps curl.  The data for this project was originally collected for the purpose of developing a predictive models to identify when individuals incorrectly performed a biceps curl.  The results of that study were presented in the article "Qualitative Activity Recognition of Weight Lifting Exercises" (Velloso, Bulling, Gellersen, et.al.).  Subsequently, the overall data set has been made availbe at the following website: <http://groupware.les.inf.puc-rio.br/har>. 
+
+The data was collected from six subjects using accelerometers that were attached on the subjects arm, wrist, waist (via a weight lifting belt), and on a dumbbell. Each subject was then instructed to perform a biceps curl in each of the following ways (per the original researcher's description):
+
+1)  Exactly according to the specification (Class A).
+2)  Throwing the elbows to the front (Class B). 
+3)  Lifting the dumbbell only halfway (Class C). 
+4)  Lowering the dumbbell only halfway (Class D). 
+5)  Throwing the hips to the front (Class E).
+
+##Exploratory Analysis
+
+```{r}
+setwd("~/Practical Machine Learning")
+
+library(ggplot2)
+library(caret)
+library(randomForest)
+```
+The data specifically intended for use in this project was obtained by direct download (through an R script) from the following websites:
+
+Model Training Data: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+Model Test Data: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+```{r,echo=FALSE}
+if (!file.exists('pml-training.csv')) {
+     fileUrl <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+     download.file(fileUrl, destfile = 'pml-training.csv', method = 'auto')
+}
+
+if (!file.exists('pml-testing.csv')) {
+     fileUrl2 <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+     download.file(fileUrl, destfile = 'pml-testing.csv', method = 'auto')
+}
+
+raw_data <- read.csv('pml-training.csv', header = TRUE)
+```
+The overall data set available for model training and testing consists of 19622 observations of 160 variables.  Considering the significant number of variables available it was necessary to carefully evaluate the data set and determine which should be included as model features.  The initial step in doing this was to examine each of the variable names so that their roll in the data set could be better understood.  From this several groups of variables were initially identified for inclusion.  The angle, accelleration, gyroscope, and magnetometer data for each of the sensors were immediately included since they give the most direct information about the action being performed over time.  Along with these the subject name, timestamps, and activity class variables were also selected.  The remaining variables were principally excluded for two reasons.  The first was they only provided descriptive measures of the directly measured variables (e.g. the average and standard deviation of the sensor acceleration).  The second was that many of the remaining variable had a large number of NA or zero data values.  Due to the combination of these factors it did not seem reasonable that they would be able to contribute appropriately to a predictive model.
+
+```{r,echo=FALSE}
+temp1 <- subset(raw_data, select = c(1:11, 37:49, 60:68, 84:86, 102, 113:124, 140, 151:160))
+
+temp2 <- subset(raw_data, select = c(5, 7, 8:11, 40:42, 46:49, 63:65, 84:86, 102, 116:118, 122:124, 140, 154:156, 160))
+```
+As such, the overall data was subset by manually identifying which variables should be included based on column  number. By removing the other variables it reduced the total number of possible variables from 160 to 60 which also helped fascilitate further exploratory analysis.
+
+For the remaining variables multiple plots were generated to explore different aspects of the data set.  One such sample plot is provided below.  The intent of this was to be able to comparatively evaluate the differences in each condition with respect to a specific variable (in this case the roll angle for the arm sensor).  For the sake of conciseness only the sample plot is provided here, although multiple others were generated during the exploratory portion of the project.
+```{r, echo=FALSE}
+plot1 <- ggplot(raw_data, aes(x = X, y = roll_arm, colour = classe)) + geom_line() + labs(x = "Sample", y = "Arm Sensor Roll Angle") + ggtitle("Figure 1: Sample Exploratory Plot")
+
+plot1
+```
+
+##Model Development and Selection
+
+Even with the reduction in variables there were still a considerable number that could be used as features within a model.  Additionally, from the exploratory analysis it was observed that many of the values for the different variables fell into a similar overall range.  As such a decision tree model with Principle Component Analysis (PCA) preprocessing was selected as a starting point.  From there the following general aproach taken for developing and evaluating the initial models:  
+
+1)  The caret package in R was utilized for training, testing and evaluating the different models.
+2)  Each model started with the creation of training and testing data sets.  The split was made such that 70% of the overall data set was used for training and 30% was used for testing.
+3)  The training parameter (trainControl) utilized a repeated cross validation method (repeatedcv) with the number of folds set to ten and the number of repetitions set to five.  When different values were used in this parameter (e.g. 25 folds and 15 repetitions) there was no noticable change in the final model output or accuracy.  As a result, the original parameters (ten folds with five repetitions) were used for each of the models.
+4) For the models that incorporated Principle Component Analysis, the threshold was set at 80%.
+5)  All of the potential features not previously excluded were incorporated into the model. 
+6)  In order to take advantage of the Confusion Matrix for performing the comparative anaylssis between the actual data and the predicted values the category variables (Groups A through E) were converted to numeric values.  So in the anaylsis results presented below group 1 through 5 correspond with A through E.
+
+The code below provides a representative example of how the model was created and tested using a Confusion Matrix to evaluate the expected versus predicted values in the testing subset.  This code is also the actual final version of the initial model used.
+```{r, cache=TRUE}
+mod1 <- subset(raw_data, select = c(1:11, 37:49, 60:68, 84:86, 102, 113:124, 140, 151:160))
+
+set.seed(125)
+
+ctrl1 <- trainControl(method = "repeatedcv", number = 10, repeats = 5)
+
+inTrain1 <- createDataPartition(y = temp1$classe, p = 0.7, list = FALSE)
+
+training1 <- mod1[inTrain1,]
+
+testing1 <- mod1[-inTrain1,]
+
+preproc1 <- preProcess(training1[,-60], method = "pca", thresh = .8)
+
+trainpc1 <- predict(preproc1, training1[,-60])
+
+modelfit1 <- train(training1$classe ~ ., method="rpart", data=trainpc1, trControl = ctrl1)
+
+testpc1 <- predict(preproc1, testing1[,-60])
+
+final_result_eval1 <- confusionMatrix(as.numeric(predict(modelfit1, testpc1)), as.numeric(testing1$classe))
+
+```
+As shown below, the initial model resulted in an overall accuracy rate of approximately 52% for the testing data set (Out of Sample Error of 48%), which was considered well below acceptable.  The error rates were also very similar between the training and test sets.  Additionally, even though the model had relatively high specificity for detecting each of the activity types, the sensitivity was often very low.
+```{r}
+confusionMatrix(as.numeric(predict(modelfit1, trainpc1)), as.numeric(training1$classe))
+final_result_eval1
+```
+It should also be noted that an alternate initial model was also created where additional observations were removed if there was not a complete data set across all the variables.  After removing this additional data the model had an approximate Out of Sample Error of 69%.  Based on this result future models did not remove any additional observations from the data set.
+
+After evaluating the results of the first model, along with reevaluating the remaining variables, it was suspected that additional features could be removed.  This was also somewhat supported by the PCA result from the first model since out of the 60 overall variables available only 17 were identified as principle components.
+
+A secondary review of the variables led to the decision to exclude the gyroscope and magnatometer data (keeping only the angle and acceleration data).  The reasoning was that the remaining yaw, pitch, and roll data (the angle calculations for each sensor) and acceleration data are essentially derived from the gyroscope and magnetometer values, which provide sensor position and orientation, respectively.  So by including all of these variables it is functionally simlar to including the same ones twice and thereby potentially adding redundant variables.  Along with this, it was suspected that by knowing how the sensors were moving and the rate of change of that movement that a reasonable determination could be made about the activity being performed.
+
+Additionally, the timestamp, subject, and other variables were also evaluated for inclusion/exclusion.  This was done by iteratively adding the variables one at a time and re-running the model to see the impact.  For example, the model below was run first using only the angle and acceleration data, then it was re-run adding in the cvtd timestamp variable.  In the next iteration it was run again with all of the former variables with the inclusion of the raw timestamp part 1 variable.  This same process was performed until all of the first 11 variables in the data set had been included and evaluated in the model.  The final result of this was the second model shown below. 
+```{r, cache=TRUE}
+mod2 <- subset(raw_data, select = c(5, 7, 8:11, 40:42, 46:49, 63:65, 84:86, 102, 116:118, 122:124, 140, 154:156, 160))
+
+set.seed(127)
+
+ctrl2 <- trainControl(method = "repeatedcv", number = 10, repeats = 5, allowParallel = TRUE)
+
+inTrain2 <- createDataPartition(y = mod2$classe, p = 0.7, list = FALSE)
+
+training2 <- mod2[inTrain2,]
+
+testing2 <- mod2[-inTrain2,]
+
+preproc2 <- preProcess(training2[,-31], method = "pca", thresh = .8)
+
+trainpc2 <- predict(preproc2, training2[,-31])
+
+modelfit2 <- train(training2$classe ~ ., 
+                   method="rpart",
+                   data=trainpc2,
+                   trControl = ctrl2)
+
+testpc2 <- predict(preproc2, testing2[,-31])
+
+final_result_eval2 <- confusionMatrix(as.numeric(predict(modelfit2, testpc2)), as.numeric(testing2$classe))
+```
+As indicated below the second model performed much better on the testing data set (overall accuracy of approximately 69%, or an Out of Sample Error of approximately 31%).  As with the first model the In and out of Sample Errors were similar.  This result also helped confirm that the reduction in variables (this time from 60 to 31) seemed appropriate. Even still, the PCA only utilized ten variables as part of the model, so it could still be possible that more could be removed.
+```{r}
+confusionMatrix(as.numeric(predict(modelfit2, trainpc2)), as.numeric(training2$classe))
+final_result_eval2
+```
+The next, and final model, utilized a slightly different approach.  Instead of utilizing a single decision tree with PCA, a random forrest model was selected.  For this model there was no pre-processing with PCA and the repeated cross validation was still utilized with the same parameters as before.  Also, for this model the number of trees was set at 100.
+```{r, cache=TRUE}
+mod3 <- subset(raw_data, select = c(5, 7, 8:11, 40:42, 46:49, 63:65, 84:86, 102, 116:118, 122:124, 140, 154:156, 160))
+
+set.seed(129)
+
+ctrl3 <- trainControl(method = "repeatedcv", number = 10, repeats = 5, allowParallel = TRUE)
+
+inTrain3 <- createDataPartition(y = mod3$classe, p = 0.7, list = FALSE)
+
+training3 <- mod3[inTrain3,]
+
+testing3 <- mod3[-inTrain3,]
+
+modelfit3 <- train(training3$classe ~ ., 
+                   method="rf",
+                   data=training3,
+                   trControl = ctrl3,
+                   ntrees = 100)
+
+final_result_eval3 <- confusionMatrix(as.numeric(predict(modelfit3, testing3)), as.numeric(testing3$classe))
+```
+The results of this were the best of the three with an overall accuracy of almost 100% (shown below).  From this result, this final model was selected to evaluate the separate, completely independent, testing data set.
+```{r}
+modelfit3$finalModel
+final_result_eval3
+```
+
+##Discussion/Conclusion
+As indicated previously, based on the simulated performance of the the models, model three was selected to evaluate the independent test set.  This untimately produced a result that was 95% accurate (19 out of 20 cases were correctly identified).  While the actual accuracy was lower than the estimated accuracy this was still considered a very good overall result.
+
+Below is the code for performing the final prediction on the new test data set utilizing the model generated by the Random Forrest approach.
+```{r}
+raw_data2 <- read.csv('pml-testing.csv', header = TRUE)
+
+final_test_data <- subset(raw_data2, select = c(5, 7, 8:11, 40:42, 46:49, 63:65, 84:86, 102, 116:118, 122:124, 140, 154:156, 160))
+
+final_test <- predict(modelfit3, newdata = final_test_data)
+```
+```{r, echo=FALSE}
+actual_res <- c("B", "B", "B", "A", "A", "E", "D", "B", "A", "A", "B", "C", "B", "A", "E", "E", "A", "B", "B", "B")
+
+table(final_test, actual_res)
+```
+Based on the final model performance it appears that the amount and type of cross validation performed was adequate.  However, this does not mean that there could be a benefit to utilizing alternative methods or further refining the parameters.  Similarly, even though the Random Forest approach produced a reasonably accurate result an alternative method such as creating a general boosted model (gbm) could potentially create an even more robust one.  Additionally, there is also a likelihood that further modification of the tuning parameters could produce a better model with a tool such as Random Forests.  Unfortunately, due to multiple constraints these alternative avenues were not explored to an ideal degree.
